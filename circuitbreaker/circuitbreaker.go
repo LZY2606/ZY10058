@@ -202,6 +202,16 @@ func (cb *circuitBreaker[R]) State() State {
 	return cb.state.state()
 }
 
+// SnapshotState implements failsafe.PolicySnapshotter. The state is shared with other executions of the same
+// CircuitBreaker and is captured at the moment the snapshot is taken.
+func (cb *circuitBreaker[R]) SnapshotState() failsafe.PolicySnapshot {
+	return failsafe.PolicySnapshot{
+		Policy: "CircuitBreaker",
+		Shared: true,
+		State:  cb.State().String(),
+	}
+}
+
 func (cb *circuitBreaker[R]) RemainingDelay() time.Duration {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()

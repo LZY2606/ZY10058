@@ -90,11 +90,15 @@ type execution[R any] struct {
 	deferCancel    *atomic.Bool
 	canceledResult **common.PolicyResult[R]
 
+	// Shared snapshot recorder, nil unless snapshots are enabled for the execution
+	recorder *snapshotRecorder
+
 	// Per execution state
 	attemptStartTime time.Time
 	isHedge          bool
-	lastResult       R     // The last error that occurred, else the zero value for R.
-	lastError        error // The last error that occurred, else nil.
+	lastResult       R      // The last error that occurred, else the zero value for R.
+	lastError        error  // The last error that occurred, else nil.
+	attemptID        uint64 // The ID of the current attempt in the recorder, guarded by mu, else 0.
 }
 
 var _ Execution[any] = &execution[any]{}
@@ -177,6 +181,9 @@ func (e *execution[R]) RecordResult(result *common.PolicyResult[R]) *common.Poli
 	if result != nil {
 		e.lastResult = result.Result
 		e.lastError = result.Error
+		if e.recorder != nil {
+			e.recorder.setLastError(result.Error)
+		}
 	}
 	return nil
 }
@@ -208,11 +215,61 @@ func (e *execution[R]) Cancel(result *common.PolicyResult[R]) {
 		*e.canceledResult = result
 		e.lastResult = result.Result
 		e.lastError = result.Error
+		if e.recorder != nil {
+			e.recorder.cancelAttempt(e.attemptID, result.Error)
+			e.recorder.setLastError(result.Error)
+		}
 	}
 
 	if e.cancelFunc != nil && !(result == nil && e.deferCancel.Load()) {
 		e.cancelFunc()
 	}
+}
+
+// RecordCancelCause records the cancellation cause for the current attempt and the overall execution. It is a no-op
+// when snapshots are not enabled.
+func (e *execution[R]) RecordCancelCause(cause CancelCause) {
+	if e.recorder == nil {
+		return
+	}
+	e.mu.Lock()
+	attemptID := e.attemptID
+	e.mu.Unlock()
+	e.recorder.setAttemptCause(attemptID, cause)
+	e.recorder.setCause(cause)
+}
+
+// RecordAttemptCancelCause records the cancellation cause for the current attempt only. It is a no-op when snapshots
+// are not enabled.
+func (e *execution[R]) RecordAttemptCancelCause(cause CancelCause) {
+	if e.recorder == nil {
+		return
+	}
+	e.mu.Lock()
+	attemptID := e.attemptID
+	e.mu.Unlock()
+	e.recorder.setAttemptCause(attemptID, cause)
+}
+
+// RecordPlannedDelay records a planned delay before a following attempt. It is a no-op when snapshots are not
+// enabled.
+func (e *execution[R]) RecordPlannedDelay(delay time.Duration) {
+	if e.recorder != nil {
+		e.recorder.plannedDelayNanos.Store(int64(delay))
+	}
+}
+
+// snapshot builds a snapshot of the execution, returning false if snapshots are not enabled.
+func (e *execution[R]) snapshot() (ExecutionSnapshot, bool) {
+	if e.recorder == nil {
+		return ExecutionSnapshot{}, false
+	}
+	return e.recorder.build(
+		int(e.attempts.Load()),
+		int(e.retries.Load()),
+		int(e.hedges.Load()),
+		int(e.executions.Load()),
+	), true
 }
 
 func (e *execution[R]) DeferCancel() func() {

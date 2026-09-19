@@ -3,6 +3,7 @@ package ratelimiter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -344,4 +345,20 @@ func (r *rateLimiter[R]) ToExecutor(_ R) any {
 
 func (r *rateLimiter[R]) Reset() {
 	r.stats.reset()
+}
+
+// SnapshotState implements failsafe.PolicySnapshotter. The state is shared with other executions of the same
+// RateLimiter and is captured at the moment the snapshot is taken.
+func (r *rateLimiter[R]) SnapshotState() failsafe.PolicySnapshot {
+	var state string
+	if r.interval != 0 {
+		state = fmt.Sprintf("interval=%s maxWaitTime=%s", r.interval, r.maxWaitTime)
+	} else {
+		state = fmt.Sprintf("permits=%d period=%s maxWaitTime=%s", r.periodPermits, r.period, r.maxWaitTime)
+	}
+	return failsafe.PolicySnapshot{
+		Policy: "RateLimiter",
+		Shared: true,
+		State:  state,
+	}
 }

@@ -2,6 +2,7 @@ package timeout
 
 import (
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +20,21 @@ type executor[R any] struct {
 
 var _ policy.Executor[any] = &executor[any]{}
 
+// cancelCauseRecorder is implemented by executions that record snapshot state.
+type cancelCauseRecorder interface {
+	RecordCancelCause(cause failsafe.CancelCause)
+}
+
+// SnapshotState implements failsafe.PolicySnapshotter. The cancellation cause of a timed out execution is available
+// in the failsafe.ExecutionSnapshot itself.
+func (e *executor[R]) SnapshotState() failsafe.PolicySnapshot {
+	return failsafe.PolicySnapshot{
+		Policy: "Timeout",
+		Shared: false,
+		State:  fmt.Sprintf("timeLimit=%s", e.timeLimit),
+	}
+}
+
 func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyResult[R]) func(failsafe.Execution[R]) *common.PolicyResult[R] {
 	// This func sets up a race between a timeout and the innerFn returning
 	return func(exec failsafe.Execution[R]) *common.PolicyResult[R] {
@@ -30,6 +46,9 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyRe
 		timer := time.AfterFunc(e.timeLimit, func() {
 			timeoutResult := internal.FailureResult[R](ErrExceeded)
 			if result.CompareAndSwap(nil, timeoutResult) {
+				if recorder, ok := execInternal.(cancelCauseRecorder); ok {
+					recorder.RecordCancelCause(failsafe.CancelTimeout)
+				}
 				if e.onTimeoutExceeded != nil {
 					e.onTimeoutExceeded(failsafe.ExecutionDoneEvent[R]{
 						ExecutionInfo: execInternal,

@@ -3,6 +3,7 @@ package bulkhead
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -99,6 +100,16 @@ type bulkhead[R any] struct {
 }
 
 func (*bulkhead[R]) ResultAgnostic() {}
+
+// SnapshotState implements failsafe.PolicySnapshotter. The state is shared with other executions of the same
+// Bulkhead and is captured at the moment the snapshot is taken.
+func (b *bulkhead[R]) SnapshotState() failsafe.PolicySnapshot {
+	return failsafe.PolicySnapshot{
+		Policy: "Bulkhead",
+		Shared: true,
+		State:  fmt.Sprintf("inUse=%d maxConcurrency=%d", len(b.semaphore), b.maxConcurrency),
+	}
+}
 
 func (b *bulkhead[R]) AcquirePermit(ctx context.Context) error {
 	if ctx == nil {

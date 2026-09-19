@@ -25,6 +25,13 @@ type Executor[R any] interface {
 	// Execution.Canceled or Execution.IsCanceled.
 	WithContext(ctx context.Context) Executor[R]
 
+	// WithSnapshots returns a new copy of the Executor with execution snapshots enabled or disabled, which are
+	// disabled by default. When enabled, each execution is assigned a stable ID and records its attempts, planned
+	// delays, last error, cancellation cause, and the key state of each composed policy. The snapshot can be read
+	// from event listeners or the executed func via SnapshotOf. When disabled, no attempt history is recorded and
+	// executions only pay the cost of a nil check.
+	WithSnapshots(enabled bool) Executor[R]
+
 	// OnDone registers the listener to be called when an execution is done.
 	OnDone(listener func(ExecutionDoneEvent[R])) Executor[R]
 
@@ -86,6 +93,7 @@ type Executor[R any] interface {
 type executor[R any] struct {
 	policies  []Policy[R]
 	ctx       context.Context
+	snapshots bool
 	onDone    func(ExecutionDoneEvent[R])
 	onSuccess func(ExecutionDoneEvent[R])
 	onFailure func(ExecutionDoneEvent[R])
@@ -134,6 +142,12 @@ func (e *executor[R]) WithContext(ctx context.Context) Executor[R] {
 	if ctx != nil {
 		c.ctx = ctx
 	}
+	return &c
+}
+
+func (e *executor[R]) WithSnapshots(enabled bool) Executor[R] {
+	c := *e
+	c.snapshots = enabled
 	return &c
 }
 
@@ -231,8 +245,24 @@ func (e *executor[R]) executeAsync(fn func(exec Execution[R]) (R, error), withEx
 }
 
 func (e *executor[R]) execute(fn func(exec Execution[R]) (R, error), outerExec *execution[R], withExec bool) *common.PolicyResult[R] {
-	outerFn := func(exec Execution[R]) *common.PolicyResult[R] {
+	var recorder *snapshotRecorder
+	if e.snapshots {
+		recorder = newSnapshotRecorder(outerExec.ctx)
+		outerExec.recorder = recorder
+	}
+
+	outerFn := func(exec Execution[R]) (policyResult *common.PolicyResult[R]) {
 		execInternal := exec.(*execution[R])
+		if recorder != nil {
+			// Record each actual invocation of the fn as an attempt, and its completion when the fn returns
+			attemptID := recorder.recordAttemptStart(execInternal.isHedge)
+			execInternal.mu.Lock()
+			execInternal.attemptID = attemptID
+			execInternal.mu.Unlock()
+			defer func() {
+				recorder.recordAttemptComplete(attemptID, policyResult.Error)
+			}()
+		}
 		var execForUser Execution[R]
 		if withExec {
 			// Only copy and provide an execution to the user fn if needed
@@ -252,11 +282,25 @@ func (e *executor[R]) execute(fn func(exec Execution[R]) (R, error), outerExec *
 	// Compose policy executors from the innermost policy to the outermost
 	for i := len(e.policies) - 1; i >= 0; i-- {
 		pe := e.policies[i].ToExecutor(*new(R)).(policyExecutor[R])
+		if recorder != nil {
+			if provider, ok := pe.(PolicySnapshotter); ok {
+				recorder.providers = append(recorder.providers, provider)
+			}
+		}
 		outerFn = pe.Apply(outerFn)
+	}
+	if recorder != nil {
+		// Order providers to match the configured policy order
+		for i, j := 0, len(recorder.providers)-1; i < j; i, j = i+1, j-1 {
+			recorder.providers[i], recorder.providers[j] = recorder.providers[j], recorder.providers[i]
+		}
 	}
 
 	// Execute
 	er := outerFn(outerExec)
+	if recorder != nil && er != nil {
+		recorder.setLastError(er.Error)
+	}
 
 	if e.onSuccess != nil && er.SuccessAll {
 		e.onSuccess(newExecutionDoneEvent(outerExec, er))

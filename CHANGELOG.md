@@ -1,5 +1,12 @@
 ## Upcoming Release
 
+### Features
+
+- Added read-only execution snapshots, enabled via `Executor.WithSnapshots` and read via `failsafe.SnapshotOf`. A
+  snapshot gives a single outer execution a stable ID and records its attempts, elapsed time, planned delays, last
+  error, cancellation cause, and the key state of each composed policy, including shared `CircuitBreaker`,
+  `RateLimiter`, and `Bulkhead` state captured at snapshot time.
+
 ## 0.9.7
 
 ### Bug Fixes

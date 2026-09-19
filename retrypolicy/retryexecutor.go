@@ -1,6 +1,7 @@
 package retrypolicy
 
 import (
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -24,6 +25,21 @@ type executor[R any] struct {
 }
 
 var _ policy.Executor[any] = &executor[any]{}
+
+// plannedDelayRecorder is implemented by executions that record snapshot state.
+type plannedDelayRecorder interface {
+	RecordPlannedDelay(delay time.Duration)
+}
+
+// SnapshotState implements failsafe.PolicySnapshotter. Live retry progress for the execution, such as the attempt
+// count and planned delay, is available in the failsafe.ExecutionSnapshot itself.
+func (e *executor[R]) SnapshotState() failsafe.PolicySnapshot {
+	return failsafe.PolicySnapshot{
+		Policy: "RetryPolicy",
+		Shared: false,
+		State:  fmt.Sprintf("maxRetries=%d maxDuration=%s", e.maxRetries, e.maxDuration),
+	}
+}
 
 func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyResult[R]) func(failsafe.Execution[R]) *common.PolicyResult[R] {
 	return func(exec failsafe.Execution[R]) *common.PolicyResult[R] {
@@ -63,6 +79,9 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyRe
 
 			// Delay
 			delay := e.getDelay(exec)
+			if recorder, ok := execInternal.(plannedDelayRecorder); ok {
+				recorder.RecordPlannedDelay(delay)
+			}
 			if e.onRetryScheduled != nil {
 				e.onRetryScheduled(failsafe.ExecutionScheduledEvent[R]{
 					ExecutionAttempt: execInternal.CopyWithResult(result),

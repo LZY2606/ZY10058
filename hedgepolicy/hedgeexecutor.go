@@ -1,6 +1,7 @@
 package hedgepolicy
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/failsafe-go/failsafe-go"
@@ -16,6 +17,26 @@ type executor[R any] struct {
 }
 
 var _ policy.Executor[any] = &executor[any]{}
+
+// plannedDelayRecorder is implemented by executions that record snapshot state.
+type plannedDelayRecorder interface {
+	RecordPlannedDelay(delay time.Duration)
+}
+
+// cancelCauseRecorder is implemented by executions that record snapshot state.
+type cancelCauseRecorder interface {
+	RecordAttemptCancelCause(cause failsafe.CancelCause)
+}
+
+// SnapshotState implements failsafe.PolicySnapshotter. Live hedge progress for the execution is available in the
+// failsafe.ExecutionSnapshot itself.
+func (e *executor[R]) SnapshotState() failsafe.PolicySnapshot {
+	return failsafe.PolicySnapshot{
+		Policy: "HedgePolicy",
+		Shared: false,
+		State:  fmt.Sprintf("maxHedges=%d", e.maxHedges),
+	}
+}
 
 func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyResult[R]) func(failsafe.Execution[R]) *common.PolicyResult[R] {
 	return func(exec failsafe.Execution[R]) *common.PolicyResult[R] {
@@ -97,6 +118,9 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyRe
 			// Wait for result or hedge delay
 			var result *execResult
 			delay := e.delayFunc(exec)
+			if recorder, ok := parentExecution.(plannedDelayRecorder); ok {
+				recorder.RecordPlannedDelay(delay)
+			}
 			if allowed && execIdx < e.maxHedges && delay >= 0 {
 				timer := time.NewTimer(delay)
 				result = awaitResult(timer.C)
@@ -117,6 +141,9 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyRe
 						if i == result.index {
 							execution.Cancel(nil)
 						} else {
+							if recorder, ok := execution.(cancelCauseRecorder); ok {
+								recorder.RecordAttemptCancelCause(failsafe.CancelHedge)
+							}
 							execution.Cancel(result.result)
 						}
 					}
