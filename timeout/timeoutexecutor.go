@@ -24,12 +24,27 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyRe
 	return func(exec failsafe.Execution[R]) *common.PolicyResult[R] {
 		execInternal := exec.(policy.ExecutionInternal[R])
 
+		var tracker *failsafe.SnapshotTracker
+		if rec, ok := execInternal.(failsafe.SnapshotRecorder); ok {
+			tracker = rec.SnapshotTracker()
+		}
+		if tracker != nil {
+			tracker.RegisterPolicy("Timeout", false, func() map[string]any {
+				return map[string]any{"timeLimit": e.timeLimit}
+			})
+		}
+
 		// Create child context
 		execInternal = execInternal.CopyForCancellable().(policy.ExecutionInternal[R])
 		var result atomic.Pointer[common.PolicyResult[R]]
 		timer := time.AfterFunc(e.timeLimit, func() {
 			timeoutResult := internal.FailureResult[R](ErrExceeded)
 			if result.CompareAndSwap(nil, timeoutResult) {
+				// Record the cancellation source before canceling, so snapshots can distinguish a timeout from a
+				// context cancellation
+				if rec, ok := execInternal.(failsafe.SnapshotRecorder); ok {
+					rec.RecordSnapshotCancel(failsafe.CancelSourceTimeout)
+				}
 				if e.onTimeoutExceeded != nil {
 					e.onTimeoutExceeded(failsafe.ExecutionDoneEvent[R]{
 						ExecutionInfo: execInternal,

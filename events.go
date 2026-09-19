@@ -11,11 +11,23 @@ type ExecutionEvent[R any] struct {
 	ExecutionAttempt[R]
 }
 
+// Snapshot returns a snapshot of the execution, and whether snapshot recording was enabled via
+// Executor.WithSnapshots.
+func (e ExecutionEvent[R]) Snapshot() (ExecutionSnapshot, bool) {
+	return SnapshotOf(e.ExecutionAttempt)
+}
+
 // ExecutionScheduledEvent indicates an execution was scheduled.
 type ExecutionScheduledEvent[R any] struct {
 	ExecutionAttempt[R]
 	// The delay before the next execution attempt.
 	Delay time.Duration
+}
+
+// Snapshot returns a snapshot of the execution, and whether snapshot recording was enabled via
+// Executor.WithSnapshots.
+func (e ExecutionScheduledEvent[R]) Snapshot() (ExecutionSnapshot, bool) {
+	return SnapshotOf(e.ExecutionAttempt)
 }
 
 // ExecutionDoneEvent indicates an execution is done.
@@ -25,6 +37,12 @@ type ExecutionDoneEvent[R any] struct {
 	Result R
 	// The execution error, else nil
 	Error error
+}
+
+// Snapshot returns a snapshot of the execution, and whether snapshot recording was enabled via
+// Executor.WithSnapshots.
+func (e ExecutionDoneEvent[R]) Snapshot() (ExecutionSnapshot, bool) {
+	return SnapshotOf(e.ExecutionInfo)
 }
 
 func newExecutionDoneEvent[R any](info ExecutionInfo, er *common.PolicyResult[R]) ExecutionDoneEvent[R] {

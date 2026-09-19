@@ -25,10 +25,24 @@ type executor[R any] struct {
 
 var _ policy.Executor[any] = &executor[any]{}
 
+// snapshotTracker returns the failsafe.SnapshotTracker for the exec, else nil if snapshot recording is not enabled.
+func snapshotTracker[R any](exec failsafe.Execution[R]) *failsafe.SnapshotTracker {
+	if rec, ok := exec.(failsafe.SnapshotRecorder); ok {
+		return rec.SnapshotTracker()
+	}
+	return nil
+}
+
 func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyResult[R]) func(failsafe.Execution[R]) *common.PolicyResult[R] {
 	return func(exec failsafe.Execution[R]) *common.PolicyResult[R] {
 		execInternal := exec.(policy.ExecutionInternal[R])
 		isRetry := false
+
+		if tracker := snapshotTracker(exec); tracker != nil {
+			tracker.RegisterPolicy("RetryPolicy", false, func() map[string]any {
+				return map[string]any{"retries": exec.Retries()}
+			})
+		}
 
 		if e.budget != nil {
 			e.budget.RecordExecution()
@@ -63,6 +77,9 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyRe
 
 			// Delay
 			delay := e.getDelay(exec)
+			if tracker := snapshotTracker(exec); tracker != nil {
+				tracker.RecordPlannedDelay(delay)
+			}
 			if e.onRetryScheduled != nil {
 				e.onRetryScheduled(failsafe.ExecutionScheduledEvent[R]{
 					ExecutionAttempt: execInternal.CopyWithResult(result),

@@ -25,6 +25,15 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyRe
 			final  bool
 		}
 		parentExecution := exec.(policy.ExecutionInternal[R])
+
+		if rec, ok := parentExecution.(failsafe.SnapshotRecorder); ok {
+			if tracker := rec.SnapshotTracker(); tracker != nil {
+				tracker.RegisterPolicy("HedgePolicy", false, func() map[string]any {
+					return map[string]any{"hedges": parentExecution.Hedges()}
+				})
+			}
+		}
+
 		executions := make([]policy.ExecutionInternal[R], e.maxHedges+1)
 		resultChan := make(chan *execResult, e.maxHedges+1)
 		started, completed := 0, 0
@@ -117,6 +126,11 @@ func (e *executor[R]) Apply(innerFn func(failsafe.Execution[R]) *common.PolicyRe
 						if i == result.index {
 							execution.Cancel(nil)
 						} else {
+							// Record the cancellation source before canceling, so snapshots can distinguish losing
+							// hedged attempts from the winning attempt
+							if rec, ok := execution.(failsafe.SnapshotRecorder); ok {
+								rec.RecordSnapshotCancel(failsafe.CancelSourceHedge)
+							}
 							execution.Cancel(result.result)
 						}
 					}

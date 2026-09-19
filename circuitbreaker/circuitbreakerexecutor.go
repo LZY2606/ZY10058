@@ -1,6 +1,7 @@
 package circuitbreaker
 
 import (
+	"github.com/failsafe-go/failsafe-go"
 	"github.com/failsafe-go/failsafe-go/common"
 	"github.com/failsafe-go/failsafe-go/internal"
 	"github.com/failsafe-go/failsafe-go/policy"
@@ -14,7 +15,16 @@ type executor[R any] struct {
 
 var _ policy.Executor[any] = &executor[any]{}
 
-func (e *executor[R]) PreExecute(_ policy.ExecutionInternal[R]) *common.PolicyResult[R] {
+func (e *executor[R]) PreExecute(exec policy.ExecutionInternal[R]) *common.PolicyResult[R] {
+	if rec, ok := exec.(failsafe.SnapshotRecorder); ok {
+		if tracker := rec.SnapshotTracker(); tracker != nil {
+			// Circuit breaker state is shared with other concurrent executions, and reflects the state at the moment a
+			// snapshot is taken
+			tracker.RegisterPolicy("CircuitBreaker", true, func() map[string]any {
+				return map[string]any{"state": e.State().String()}
+			})
+		}
+	}
 	if !e.TryAcquirePermit() {
 		return internal.FailureResult[R](ErrOpen)
 	}

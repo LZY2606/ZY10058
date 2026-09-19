@@ -25,6 +25,13 @@ type Executor[R any] interface {
 	// Execution.Canceled or Execution.IsCanceled.
 	WithContext(ctx context.Context) Executor[R]
 
+	// WithSnapshots returns a new copy of the Executor with execution snapshot recording enabled or disabled. When
+	// enabled, each execution is assigned a stable ID and records its attempts, planned delays, cancellation, and the
+	// key state of each composed policy, which can be read from event listeners via ExecutionEvent.Snapshot,
+	// ExecutionScheduledEvent.Snapshot, and ExecutionDoneEvent.Snapshot, or via SnapshotOf. Snapshot recording is
+	// disabled by default, in which case no attempt history is recorded.
+	WithSnapshots(enabled bool) Executor[R]
+
 	// OnDone registers the listener to be called when an execution is done.
 	OnDone(listener func(ExecutionDoneEvent[R])) Executor[R]
 
@@ -86,6 +93,7 @@ type Executor[R any] interface {
 type executor[R any] struct {
 	policies  []Policy[R]
 	ctx       context.Context
+	snapshots bool
 	onDone    func(ExecutionDoneEvent[R])
 	onSuccess func(ExecutionDoneEvent[R])
 	onFailure func(ExecutionDoneEvent[R])
@@ -134,6 +142,12 @@ func (e *executor[R]) WithContext(ctx context.Context) Executor[R] {
 	if ctx != nil {
 		c.ctx = ctx
 	}
+	return &c
+}
+
+func (e *executor[R]) WithSnapshots(enabled bool) Executor[R] {
+	c := *e
+	c.snapshots = enabled
 	return &c
 }
 
@@ -208,7 +222,7 @@ type policyExecutor[R any] interface {
 }
 
 func (e *executor[R]) executeSync(fn func(exec Execution[R]) (R, error), withExec bool) (R, error) {
-	er := e.execute(fn, newExecution[R](e.ctx), withExec)
+	er := e.execute(fn, newExecution[R](e.ctx, e.snapshots), withExec)
 	return er.Result, er.Error
 }
 
@@ -218,7 +232,7 @@ func (e *executor[R]) executeAsync(fn func(exec Execution[R]) (R, error), withEx
 	if ctx != nil {
 		ctx, cancelFunc = context.WithCancel(ctx)
 	}
-	exec := newExecution[R](ctx)
+	exec := newExecution[R](ctx, e.snapshots)
 	result := &executionResult[R]{
 		execution:  exec,
 		cancelFunc: cancelFunc,
@@ -239,7 +253,7 @@ func (e *executor[R]) execute(fn func(exec Execution[R]) (R, error), outerExec *
 			execForUser = execInternal.copy()
 		}
 		result, err := fn(execForUser)
-		execInternal.record()
+		execInternal.record(err)
 		return &common.PolicyResult[R]{
 			Result:     result,
 			Error:      err,
@@ -257,6 +271,10 @@ func (e *executor[R]) execute(fn func(exec Execution[R]) (R, error), outerExec *
 
 	// Execute
 	er := outerFn(outerExec)
+
+	if outerExec.tracker != nil && er.Error != nil {
+		outerExec.tracker.recordLastError(er.Error)
+	}
 
 	if e.onSuccess != nil && er.SuccessAll {
 		e.onSuccess(newExecutionDoneEvent(outerExec, er))

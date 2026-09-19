@@ -90,11 +90,15 @@ type execution[R any] struct {
 	deferCancel    *atomic.Bool
 	canceledResult **common.PolicyResult[R]
 
+	// Shared snapshot tracking state, nil unless snapshot recording is enabled
+	tracker *SnapshotTracker
+
 	// Per execution state
 	attemptStartTime time.Time
 	isHedge          bool
 	lastResult       R     // The last error that occurred, else the zero value for R.
 	lastError        error // The last error that occurred, else nil.
+	attemptID        uint64
 }
 
 var _ Execution[any] = &execution[any]{}
@@ -167,6 +171,26 @@ func (e *execution[_]) Canceled() <-chan struct{} {
 	return e.ctx.Done()
 }
 
+// Snapshot returns a snapshot of the execution, and whether snapshot recording is enabled for the execution.
+func (e *execution[R]) Snapshot() (ExecutionSnapshot, bool) {
+	if e.tracker == nil {
+		return ExecutionSnapshot{}, false
+	}
+	return e.tracker.snapshot(e), true
+}
+
+// SnapshotTracker returns the SnapshotTracker for the execution, else nil if snapshot recording is not enabled.
+func (e *execution[R]) SnapshotTracker() *SnapshotTracker {
+	return e.tracker
+}
+
+// RecordSnapshotCancel records that the execution's current attempt was canceled by the source.
+func (e *execution[R]) RecordSnapshotCancel(source CancelSource) {
+	if e.tracker != nil {
+		e.tracker.recordCancel(e.attemptID, source)
+	}
+}
+
 func (e *execution[R]) RecordResult(result *common.PolicyResult[R]) *common.PolicyResult[R] {
 	// Lock to guard against a race with a Timeout canceling the execution
 	e.mu.Lock()
@@ -194,6 +218,9 @@ func (e *execution[R]) InitializeRetry() *common.PolicyResult[R] {
 	}
 	e.attemptStartTime = time.Now()
 	*e.canceledResult = nil
+	if e.tracker != nil {
+		e.attemptID = e.tracker.startAttempt(0, false)
+	}
 	return nil
 }
 
@@ -265,6 +292,9 @@ func (e *execution[R]) CopyForHedge() Execution[R] {
 	c.attempts.Add(1)
 	c.hedges.Add(1)
 	c.ctx, c.cancelFunc = context.WithCancel(c.ctx)
+	if c.tracker != nil {
+		c.attemptID = c.tracker.startAttempt(e.attemptID, true)
+	}
 	return c
 }
 
@@ -275,16 +305,19 @@ func (e *execution[R]) copy() *execution[R] {
 	return &c
 }
 
-func (e *execution[R]) record() {
+func (e *execution[R]) record(err error) {
 	e.executions.Add(1)
+	if e.tracker != nil {
+		e.tracker.completeAttempt(e.attemptID, err, e.ctx.Err())
+	}
 }
 
-func newExecution[R any](ctx context.Context) *execution[R] {
+func newExecution[R any](ctx context.Context, snapshots bool) *execution[R] {
 	attempts := atomic.Uint32{}
 	attempts.Add(1)
 	var canceledResult *common.PolicyResult[R]
 	now := time.Now()
-	return &execution[R]{
+	exec := &execution[R]{
 		ctx:              ctx,
 		mu:               &sync.Mutex{},
 		attempts:         &attempts,
@@ -296,6 +329,11 @@ func newExecution[R any](ctx context.Context) *execution[R] {
 		attemptStartTime: now,
 		startTime:        now,
 	}
+	if snapshots {
+		exec.tracker = newSnapshotTracker()
+		exec.attemptID = exec.tracker.startAttempt(0, false)
+	}
+	return exec
 }
 
 // executionAnyWrapper adapts execution[R] to execution[any], allowing Policy[any] to be used in compositions with Policy[R].

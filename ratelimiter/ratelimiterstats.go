@@ -12,6 +12,10 @@ type stats interface {
 	// else returns -1 if the wait time would exceed the maxWaitTime. A maxWaitTime of -1 indicates no max wait.
 	acquirePermits(requestedPermits int, maxWaitTime time.Duration) time.Duration
 
+	// snapshotState returns the key state of the stats at the moment it's called, for inclusion in an execution
+	// snapshot.
+	snapshotState() map[string]any
+
 	reset()
 }
 
@@ -59,6 +63,15 @@ func (s *smoothStats[R]) reset() {
 	defer s.mu.Unlock()
 	s.stopwatch.Reset()
 	s.nextFreePermitTime = 0
+}
+
+func (s *smoothStats[R]) snapshotState() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return map[string]any{
+		"interval":         s.interval,
+		"nextFreePermitIn": max(s.nextFreePermitTime-s.stopwatch.ElapsedTime(), time.Duration(0)),
+	}
 }
 
 // A rate limiter implementation that allows bursts of executions, up to the max permits per period. This implementation
@@ -125,6 +138,16 @@ func (s *burstyStats[R]) reset() {
 	s.stopwatch.Reset()
 	s.availablePermits = s.periodPermits
 	s.currentPeriod = 0
+}
+
+func (s *burstyStats[R]) snapshotState() map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return map[string]any{
+		"period":           s.period,
+		"periodPermits":    s.periodPermits,
+		"availablePermits": s.availablePermits,
+	}
 }
 
 // exceedsMaxWaitTime returns whether the waitTime would exceed the maxWaitTime, else false if maxWaitTime is -1.

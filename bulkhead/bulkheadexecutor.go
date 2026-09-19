@@ -18,6 +18,18 @@ type executor[R any] struct {
 var _ policy.Executor[any] = &executor[any]{}
 
 func (e *executor[R]) PreExecute(exec policy.ExecutionInternal[R]) *common.PolicyResult[R] {
+	if rec, ok := exec.(failsafe.SnapshotRecorder); ok {
+		if tracker := rec.SnapshotTracker(); tracker != nil {
+			// Bulkhead state is shared with other concurrent executions, and reflects the state at the moment a
+			// snapshot is taken
+			tracker.RegisterPolicy("Bulkhead", true, func() map[string]any {
+				return map[string]any{
+					"maxConcurrency": cap(e.semaphore),
+					"inUse":          len(e.semaphore),
+				}
+			})
+		}
+	}
 	if err := e.AcquirePermitWithMaxWait(exec.Context(), e.maxWaitTime); err != nil {
 		// Check for cancellation while waiting for a permit
 		if canceled, cancelResult := exec.IsCanceledWithResult(); canceled {

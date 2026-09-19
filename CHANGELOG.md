@@ -1,5 +1,12 @@
 ## Upcoming Release
 
+### Improvements
+
+- Added execution snapshots, which record a stable execution ID, attempts, planned delays, cancellation sources, and
+  the key state of each composed policy. Snapshots can be enabled via `Executor.WithSnapshots` and read from event
+  listeners via `ExecutionEvent.Snapshot`, `ExecutionScheduledEvent.Snapshot`, and `ExecutionDoneEvent.Snapshot`, or via
+  `failsafe.SnapshotOf`.
+
 ## 0.9.7
 
 ### Bug Fixes
